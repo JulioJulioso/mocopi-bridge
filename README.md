@@ -34,9 +34,27 @@ Wi-Fi on 2.4 GHz shares the band with Bluetooth. The link still works. If a sens
 
 Do not flash firmware by hand with the Renesas SUOTA app. Changing its default parameters can destroy a sensor.
 
-### This program
+### Mocopi-bridge (this program)
 
-In this folder:
+Mocopi-bridge is this repository. It is the program that connects the sensors to the PC and sends them to SlimeVR. It is not Sony's app and it is not SlimeVR itself.
+
+**Download it**
+
+1. Open [github.com/JulioJulioso/mocopi-bridge](https://github.com/JulioJulioso/mocopi-bridge).
+2. Click the green **Code** button, then **Download ZIP**.
+3. Extract the zip. You get a folder named `mocopi-bridge-main`. Put it somewhere you can find again, such as `Documents`.
+
+If you already use Git, this is the same thing:
+
+```bash
+git clone https://github.com/JulioJulioso/mocopi-bridge.git
+```
+
+**Open Command Prompt in that folder**
+
+1. Open the extracted folder in File Explorer. You should see `README.md` and a folder named `src`.
+2. Click the address bar at the top, type `cmd`, and press Enter.
+3. A black Command Prompt window opens, already inside this folder. The commands below are typed there, one at a time. Press Enter after each one.
 
 ```bash
 pip install -r requirements.txt
@@ -44,7 +62,9 @@ set PYTHONPATH=src
 python -m mocopi_bridge.slime_link
 ```
 
-The first run creates `slime_link.json` and exits. That file stays on your PC and is not part of the git repository. Run the same command again to connect.
+The first `slime_link` run creates `slime_link.json` and exits. That file stays on your PC. It is not uploaded to GitHub. Run the last command again to connect the sensors.
+
+`set PYTHONPATH=src` lasts only while that Command Prompt window is open. Type it again each time you open a new window, before `python -m mocopi_bridge.slime_link`.
 
 ## Connect the sensors to the PC
 
@@ -86,13 +106,13 @@ If the scan lists the six addresses and you want to skip the search next time, p
 
 Closing the console disconnects the sensors. Start the command again next time. You do not re-enter the addresses.
 
-## If it fails
+## FAQ
 
 **The scan shows no mocopi sensors.** Turn each sensor off and on. Confirm the phone's Bluetooth is off. In Device Manager, confirm the only enabled Bluetooth adapter is the UB500. Unplug the UB500, plug it into another rear USB 2.0 port, and scan again.
 
-**The scan sees them, then `Connecting` fails or retries forever.** Another program still owns the sensor. Close Sony's app. Turn the sensor off and on, then let the program retry. It waits 3 seconds and tries again on its own. Restarting Windows Bluetooth (turn the UB500 off and on in Settings) clears a stuck radio.
+**The scan sees them, then Connecting fails or retries forever.** Another program still owns the sensor. Close Sony's app. Turn the sensor off and on, then let the program retry. It waits 3 seconds and tries again on its own. Turning the UB500 off and on in Windows Bluetooth settings clears a stuck radio.
 
-**One sensor streams, the others never do.** Connect them one group at a time only if you put that sensor's address alone in `addresses`. A full set should connect together. If one address never succeeds, factory-reset only that sensor (below) and scan again.
+**One sensor streams and the others never do.** A full set should connect together. If one address never succeeds, factory-reset only that sensor (see the last question) and scan again.
 
 **SlimeVR never lists the trackers.** The console can say `Streaming` while SlimeVR was started second. Quit this program, open SlimeVR, then run the program again. Trackers appear when the handshake reaches SlimeVR on port 6969.
 
@@ -108,7 +128,11 @@ Reset and mounting do not forget the sensor. Factory reset does.
 
 **One sensor will not connect after all of the above.** Factory-reset only that sensor: press its button quickly about 10 to 15 times, until the light blinks red and blue. Turn it on, run `--scan`, and connect again. Leave the other five alone.
 
-**All six drop when you walk near the router.** The 2.4 GHz Wi-Fi is crowding Bluetooth. Move the UB500 away from the router. The sensors stay paired. Only the radio was noisy.
+**All six drop when you walk near the router.** The 2.4 GHz Wi-Fi is crowding Bluetooth. Move the UB500 away from the router. Only the radio was noisy.
+
+**Command Prompt says python is not recognized.** Python was installed without **Add python.exe to PATH**. Install it again from [python.org](https://www.python.org/downloads/) and check that box, then close Command Prompt and open it again.
+
+**The commands do nothing or say the path cannot be found.** Command Prompt is not inside the extracted folder. The address bar must show the folder that contains `src` before you type `cmd`.
 
 ## SlimeVR to VRChat, Unity, and Blender
 
