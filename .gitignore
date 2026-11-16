@@ -5,3 +5,12 @@ recordings/
 *.bvh
 config.json
 bridge.log
+**/Library/
+**/Temp/
+**/Obj/
+**/Logs/
+**/UserSettings/
+*.csproj
+*.sln
+.vs/
+phone/Assets/Sony/

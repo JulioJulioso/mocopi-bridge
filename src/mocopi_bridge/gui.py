@@ -5,7 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from mocopi_bridge.app import INSTRUCTIONS, BridgeService, _plugin_ports, local_ipv4s
+from mocopi_bridge.app import INSTRUCTIONS, BridgeService, _plugin_ports, _prop_target, local_ipv4s
 
 
 def run_gui(config: dict) -> None:
@@ -47,6 +47,7 @@ class BridgeWindow(tk.Tk):
             listen_port=self._config["listen_port"],
             unity_port=unity_port,
             blender_port=blender_port,
+            prop_port=_prop_target(self._config)[1],
         )
         text = tk.Text(self, wrap="word", height=18, relief="flat", padx=8, pady=8)
         text.insert("1.0", steps.strip() + "\n")

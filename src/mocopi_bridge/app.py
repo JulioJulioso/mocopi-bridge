@@ -11,11 +11,19 @@ import traceback
 from collections import deque
 from pathlib import Path
 
+from mocopi_bridge.body_estimate import stance_world
 from mocopi_bridge.bvh_writer import BvhRecorder, scaled_locals
 from mocopi_bridge.config import forward_targets, hip_bone_name, resolve_config
 from mocopi_bridge.forward import UdpForwarder
 from mocopi_bridge.osc_out import OscSender, build_messages
 from mocopi_bridge.parser import PacketError, SkeletonDef, parse_packet
+from mocopi_bridge.sensors import (
+    SensorReset,
+    SensorSample,
+    encode_prop,
+    parse_sensor_datagram,
+    relative_rotation,
+)
 from mocopi_bridge.skeleton import (
     PoseAdjust,
     WorldBone,
@@ -39,6 +47,11 @@ This app sends the hips and feet, plus head position so the body stays under the
 
 Unity listens on {unity_port}. Blender listens on {blender_port}.
 Use Sony's official receiver plugins and set those ports.
+
+Free sensors: use the phone project in phone/ instead of Sony's body app.
+Assign each sensor to hip, left ankle, right ankle, or a named object.
+Objects are rotation only. Place the model in the Unity scene, then Reset on the phone
+to make the current orientation the zero pose. Unity listens for objects on port {prop_port}.
 
 If the body drifts:
 - Reset position puts you back at the origin.
@@ -74,10 +87,12 @@ class Session:
         self.frames_in_window = 0
         self.window_started = time.monotonic()
         self.fps = 0.0
+        self.free_sensors: dict[str, SensorSample] = {}
+        self._prop_reference: dict[str, tuple[float, float, float, float]] = {}
+        self._prop_packets: list[bytes] = []
 
     def feed(self, data: bytes, now: float | None = None) -> str | None:
-        if self.forwarder is not None:
-            self.forwarder.send(data)
+        sensor = parse_sensor_datagram(data)
         moment = time.monotonic() if now is None else now
         self.last_rx = moment
         self.ever_received = True
@@ -85,6 +100,12 @@ class Session:
         if self._stream_lost:
             self._stream_lost = False
             recovered = "UDP is back."
+        if sensor is not None:
+            note = self._ingest_sensor(sensor)
+            self._roll_fps(moment)
+            return note or recovered
+        if self.forwarder is not None:
+            self.forwarder.send(data)
         try:
             packet = parse_packet(data)
         except PacketError as exc:
@@ -99,27 +120,75 @@ class Session:
         self._roll_fps(moment)
         return recovered
 
+    def _ingest_sensor(self, event: SensorSample | SensorReset) -> str | None:
+        if isinstance(event, SensorReset):
+            return self._reset_props(event)
+        self.free_sensors[event.key] = event
+        self.frames_in_window += 1
+        if event.role == "prop" and event.name:
+            reference = self._prop_reference.get(event.name, (0.0, 0.0, 0.0, 1.0))
+            turned = relative_rotation(event.rotation, reference)
+            self._prop_packets = [encode_prop(event.name, turned)]
+            return None
+        self._prop_packets = []
+        return None
+
+    def _reset_props(self, event: SensorReset) -> str:
+        names = [event.name] if event.name else [
+            sample.name for sample in self.free_sensors.values() if sample.role == "prop" and sample.name
+        ]
+        saved: list[str] = []
+        packets: list[bytes] = []
+        for name in names:
+            sample = self.free_sensors.get(f"prop:{name}")
+            if sample is None:
+                continue
+            self._prop_reference[name] = sample.rotation
+            packets.append(encode_prop(name, (0.0, 0.0, 0.0, 1.0)))
+            saved.append(name)
+        self._prop_packets = packets
+        if not saved:
+            return "No object to reset yet."
+        return f"Object zero saved for {', '.join(saved)}."
+
+    def prop_datagrams(self) -> list[bytes]:
+        packets = self._prop_packets
+        self._prop_packets = []
+        return packets
+
     def current_locals(self):
         if self.definition is None:
             return {}
         return local_transforms(self.definition, self.frame_bones)
 
     def presented(self) -> dict[int, WorldBone]:
-        if self.definition is None:
+        if self.definition is not None:
+            world = forward_kinematics(self.definition, self.current_locals())
+        else:
+            world = stance_world(self._body_samples(), float(self.config.get("body_height_m", 1.7)))
+        if not world:
             return {}
-        world = forward_kinematics(self.definition, self.current_locals())
         return present_world(
             world,
             self.config["axes"],
-            float(self.config["scale"]),
+            float(self.config["scale"]) if self.definition is not None else 1.0,
             PoseAdjust(self.mirror, self.reset_xz_yaw, self.locked_hip),
-            hip_bone_id=bone_id(hip_bone_name(self.config)),
+            hip_bone_id=bone_id(hip_bone_name(self.config)) if self.definition is not None else 0,
         )
 
     def osc_messages(self) -> list[tuple[str, list[float]]]:
-        if self.paused or self.definition is None:
+        if self.paused:
+            return []
+        if self.definition is None and not self._body_samples():
             return []
         return build_messages(self.presented(), self.config["trackers"])
+
+    def _body_samples(self) -> dict[str, SensorSample]:
+        return {
+            key: sample
+            for key, sample in self.free_sensors.items()
+            if sample.role in ("hip", "left_ankle", "right_ankle")
+        }
 
     def handle_key(self, key: str) -> str | None:
         if key == "p":
@@ -182,9 +251,10 @@ class Session:
         mirror = "on" if self.mirror else "off"
         recording = "recording" if self.recorder.active else "off"
         link = "waiting" if not self.ever_received or self._stream_lost else "receiving"
+        roles = ", ".join(sorted(self.free_sensors)) if self.free_sensors else "none"
         return (
             f"{link}   fps={self.fps:5.1f}   bones={bones:2d}   osc={osc}   "
-            f"hip={hip}   mirror={mirror}   bvh={recording}"
+            f"hip={hip}   mirror={mirror}   bvh={recording}   sensors={roles}"
         )
 
     def _hip(self) -> WorldBone | None:
@@ -230,6 +300,8 @@ class BridgeService:
         self._thread: threading.Thread | None = None
         self._socket: socket.socket | None = None
         self._osc = OscSender(config["osc"]["host"], int(config["osc"]["port"]))
+        self._props = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._prop_target = _prop_target(config)
         self._autostart_pending = bool(config["bvh"].get("autostart"))
 
     def start(self) -> None:
@@ -251,6 +323,7 @@ class BridgeService:
                 self.session.recorder.stop()
         if self.session.forwarder is not None:
             self.session.forwarder.close()
+        self._props.close()
 
     def press(self, key: str) -> str | None:
         with self.lock:
@@ -295,11 +368,13 @@ class BridgeService:
                 messages: list[tuple[str, list[float]]] = []
                 note = None
                 warning = None
+                props: list[bytes] = []
                 with self.lock:
                     if data:
                         note = self.session.feed(data, now)
                         self._maybe_autostart()
                         messages = self.session.osc_messages()
+                        props = self.session.prop_datagrams()
                     warning = self.session.take_stream_warning(now)
                 if note or warning:
                     with self.lock:
@@ -309,6 +384,8 @@ class BridgeService:
                             self.notes.append(warning)
                 if messages:
                     self._osc.send(messages)
+                for blob in props:
+                    self._props.sendto(blob, self._prop_target)
         finally:
             try:
                 sock.close()
@@ -362,6 +439,7 @@ def format_banner(config: dict) -> str:
         listen_port=config["listen_port"],
         unity_port=unity_port,
         blender_port=blender_port,
+        prop_port=_prop_target(config)[1],
     )
     return (
         "mocopi bridge\n"
@@ -372,6 +450,11 @@ def format_banner(config: dict) -> str:
         f"{help_text}\n"
         "Keys: p pause OSC | r reset position | h lock hip | m mirror | b record BVH | q quit\n"
     )
+
+
+def _prop_target(config: dict) -> tuple[str, int]:
+    props = config.get("props") or {}
+    return str(props.get("host", "127.0.0.1")), int(props.get("port", 12354))
 
 
 def _plugin_ports(config: dict) -> tuple[int, int]:

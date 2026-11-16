@@ -20,6 +20,8 @@ def default_config() -> dict:
         "axes": ["x", "y", "z"],
         "stream_timeout_s": 0.5,
         "bvh": {"directory": "recordings", "autostart": False},
+        "body_height_m": 1.7,
+        "props": {"host": "127.0.0.1", "port": 12354},
         "trackers": {
             "hip": {
                 "enabled": True,
