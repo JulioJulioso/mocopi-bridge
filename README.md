@@ -8,6 +8,24 @@ Personal settings go in `config.json` in this folder. That file is not part of t
 
 Motion leaves the phone unencrypted. Keep the phone and the PC on the same local network.
 
+## SlimeVR on Windows
+
+The original MoSlime script runs on Linux only, and its Windows download is gone. This project includes a Windows link for the TP-Link UB500.
+
+1. In Device Manager, disable every Bluetooth adapter except the UB500. Plug the UB500 into a rear USB 2.0 port, away from the router.
+2. Update the sensor firmware once in Sony's phone app, then turn the phone's Bluetooth off.
+3. Start SlimeVR Server.
+4. Run:
+
+```bash
+pip install -r requirements.txt
+set PYTHONPATH=src
+python -m mocopi_bridge.slime_link --scan
+python -m mocopi_bridge.slime_link
+```
+
+The first run writes `slime_link.json`. Leave `addresses` empty to connect every nearby mocopi sensor. A sensor that goes quiet for two seconds is disconnected and connected again. Assign body parts in SlimeVR. Use SlimeVR's Reset while standing still when the body yaw drifts. That does not unpair the sensor.
+
 ## Free sensors
 
 `phone/` is a Unity project for the phone. Import Sony's mocopi sensor data reader into `phone/Assets/Sony` (that package is not in this repo) and forward each reading to `SonySensorReader.Forward`. Until that package is imported, press Play to simulate a hip, two ankles, and a box.
