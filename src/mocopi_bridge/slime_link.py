@@ -1,7 +1,9 @@
 """Connect mocopi sensors over the PC's Bluetooth radio and feed SlimeVR.
 
-Windows cannot run the original MoSlime script. This uses Bleak, so the
-TP-Link UB500 works when it is the only active Bluetooth adapter.
+Windows cannot run the original MoSlime script:
+https://github.com/moslime/moslime
+This uses Bleak, so the TP-Link UB500 works when it is the only active
+Bluetooth adapter.
 """
 
 from __future__ import annotations

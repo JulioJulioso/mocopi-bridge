@@ -10,7 +10,7 @@ Motion leaves the phone unencrypted. Keep the phone and the PC on the same local
 
 ## SlimeVR on Windows
 
-The original MoSlime script runs on Linux only, and its Windows download is gone. This project includes a Windows link for the TP-Link UB500.
+The Windows Bluetooth link follows the tracker packet layout published by [MoSlime](https://github.com/moslime/moslime) (MIT). That repository is the Linux original, and its Windows download is gone. This project does not include MoSlime's source. It includes a separate Windows link for the TP-Link UB500.
 
 1. In Device Manager, disable every Bluetooth adapter except the UB500. Plug the UB500 into a rear USB 2.0 port, away from the router.
 2. Update the sensor firmware once in Sony's phone app, then turn the phone's Bluetooth off.

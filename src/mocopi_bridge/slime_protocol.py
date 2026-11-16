@@ -1,6 +1,8 @@
 """SlimeVR UDP packets and the mocopi IMU notification layout.
 
-The field order matches the stream SlimeVR already accepts from MoSlime.
+The field order matches the stream SlimeVR already accepts from MoSlime:
+https://github.com/moslime/moslime
+That project is MIT licensed. This module is a separate implementation.
 """
 
 from __future__ import annotations

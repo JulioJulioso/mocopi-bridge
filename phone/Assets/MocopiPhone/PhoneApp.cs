@@ -18,7 +18,7 @@ public sealed class PhoneApp : MonoBehaviour
     readonly List<LiveSensor> sensors = new List<LiveSensor>();
     readonly Dictionary<string, string> roles = new Dictionary<string, string>();
     readonly Dictionary<string, string> objectNames = new Dictionary<string, string>();
-    string pcAddress = "192.168.1.10";
+    string pcAddress = "";
     string portText = "12351";
     bool sending = true;
     bool simulate = true;
