@@ -157,7 +157,7 @@ async def hold_tracker(address: str, name: str, slime: tuple[str, int], stop: as
 
 async def _start_stream(client, session: TrackerSession) -> None:
     notify_uuid, command_uuid = _characteristics(client)
-            session.send_hello("0")
+    session.send_hello("0")
     session.last_sample = time.monotonic()
 
     def on_notify(_sender, data: bytearray) -> None:
