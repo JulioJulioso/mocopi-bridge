@@ -116,7 +116,7 @@ class Session:
             self.frame_bones = packet.frame.bones
             self.frames_in_window += 1
             if self.recorder.active and self.definition is not None:
-                self.recorder.add(scaled_locals(self.current_locals(), float(self.config["scale"])))
+                self.recorder.add(scaled_locals(self.current_locals(), float(self.config["scale"])), moment)
         self._roll_fps(moment)
         return recovered
 
@@ -200,8 +200,7 @@ class Session:
             self.locked_hip = None
             return "Mirror on." if self.mirror else "Mirror off."
         if key == "r":
-            hip = self._hip()
-            if hip is None or self.definition is None:
+            if self.definition is None:
                 return "Nothing to reset yet."
             unreset = present_world(
                 forward_kinematics(self.definition, self.current_locals()),
@@ -303,6 +302,7 @@ class BridgeService:
         self._props = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._prop_target = _prop_target(config)
         self._autostart_pending = bool(config["bvh"].get("autostart"))
+        self._last_note: str | None = None
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._loop, name="mocopi-udp", daemon=True)
@@ -323,14 +323,13 @@ class BridgeService:
                 self.session.recorder.stop()
         if self.session.forwarder is not None:
             self.session.forwarder.close()
+        self._osc.close()
         self._props.close()
 
     def press(self, key: str) -> str | None:
+        """The caller shows the returned note itself, so it is not queued."""
         with self.lock:
-            note = self.session.handle_key(key)
-            if note:
-                self.notes.append(note)
-        return note
+            return self.session.handle_key(key)
 
     def drain_notes(self) -> list[str]:
         with self.lock:
@@ -362,35 +361,45 @@ class BridgeService:
                     data, _addr = sock.recvfrom(65535)
                 except TimeoutError:
                     data = None
-                except OSError:
+                except ConnectionResetError:
+                    continue
+                except OSError as exc:
+                    if not self._stop.is_set():
+                        with self.lock:
+                            self._note(f"Receiving stopped: {exc}. Restart the bridge.")
                     break
                 now = time.monotonic()
                 messages: list[tuple[str, list[float]]] = []
-                note = None
-                warning = None
                 props: list[bytes] = []
                 with self.lock:
                     if data:
-                        note = self.session.feed(data, now)
-                        self._maybe_autostart()
-                        messages = self.session.osc_messages()
-                        props = self.session.prop_datagrams()
-                    warning = self.session.take_stream_warning(now)
-                if note or warning:
+                        try:
+                            self._note(self.session.feed(data, now))
+                            self._maybe_autostart()
+                            messages = self.session.osc_messages()
+                            props = self.session.prop_datagrams()
+                        except Exception as exc:
+                            self._note(f"Dropped a packet: {exc}")
+                    self._note(self.session.take_stream_warning(now))
+                try:
+                    if messages:
+                        self._osc.send(messages)
+                    for blob in props:
+                        self._props.sendto(blob, self._prop_target)
+                except OSError as exc:
                     with self.lock:
-                        if note:
-                            self.notes.append(note)
-                        if warning:
-                            self.notes.append(warning)
-                if messages:
-                    self._osc.send(messages)
-                for blob in props:
-                    self._props.sendto(blob, self._prop_target)
+                        self._note(f"Could not send: {exc}")
         finally:
             try:
                 sock.close()
             except OSError:
                 pass
+
+    def _note(self, note: str | None) -> None:
+        """Queue a note unless it repeats the last one. Call with the lock held."""
+        if note and note != self._last_note:
+            self.notes.append(note)
+            self._last_note = note
 
     def _maybe_autostart(self) -> None:
         session = self.session
@@ -399,7 +408,7 @@ class BridgeService:
         path = session.recorder.start(session.definition)
         session.recorder.add(scaled_locals(session.current_locals(), float(self.config["scale"])))
         self._autostart_pending = False
-        self.notes.append(f"Recording BVH to {path}.")
+        self._note(f"Recording BVH to {path}.")
 
 
 def local_ipv4s() -> list[str]:
@@ -493,8 +502,9 @@ def run(config: dict) -> None:
                 note = service.press(key)
                 if note:
                     print(f"\n{note}", flush=True)
+            for note in service.drain_notes():
+                print(f"\n{note}", flush=True)
             if service.bind_error:
-                print(f"\n{service.bind_error}", flush=True)
                 return
             time.sleep(0.05)
             print("\r" + service.status_line(), end="", flush=True)

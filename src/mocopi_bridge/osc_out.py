@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mocopi_bridge.skeleton import WorldBone, bone_id, euler_xyz_deg
+from mocopi_bridge.skeleton import WorldBone, bone_id, euler_unity_deg
 
 
 def build_messages(
@@ -22,7 +22,7 @@ def build_messages(
         if spec.get("position", True):
             messages.append((f"{prefix}/position", [float(v) for v in bone.pos]))
         if spec.get("rotation", True):
-            messages.append((f"{prefix}/rotation", [float(v) for v in euler_xyz_deg(bone.rot)]))
+            messages.append((f"{prefix}/rotation", [float(v) for v in euler_unity_deg(bone.rot)]))
     return messages
 
 
@@ -35,3 +35,8 @@ class OscSender:
     def send(self, messages: list[tuple[str, list[float]]]) -> None:
         for address, args in messages:
             self._client.send_message(address, args)
+
+    def close(self) -> None:
+        sock = getattr(self._client, "_sock", None)
+        if sock is not None:
+            sock.close()

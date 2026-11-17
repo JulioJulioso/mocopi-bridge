@@ -11,8 +11,12 @@ class UdpForwarder:
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def send(self, payload: bytes) -> None:
-        for host, port in self.targets:
-            self._socket.sendto(payload, (host, port))
+        """One target that cannot be reached must not stop the others."""
+        for target in self.targets:
+            try:
+                self._socket.sendto(payload, target)
+            except OSError:
+                pass
 
     def close(self) -> None:
         self._socket.close()

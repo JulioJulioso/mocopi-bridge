@@ -16,6 +16,7 @@ Reset stores the current orientation of one object, or of every object:
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 
 BODY_ROLES = ("hip", "left_ankle", "right_ankle")
@@ -142,6 +143,7 @@ def _floats(value: object, count: int) -> tuple[float, ...] | None:
     if not isinstance(value, list) or len(value) != count:
         return None
     try:
-        return tuple(float(item) for item in value)
+        numbers = tuple(float(item) for item in value)
     except (TypeError, ValueError):
         return None
+    return numbers if all(math.isfinite(number) for number in numbers) else None

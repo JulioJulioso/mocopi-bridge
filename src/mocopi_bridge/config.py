@@ -6,6 +6,8 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+from mocopi_bridge.parser import NAME_TO_ID
+
 
 def default_config() -> dict:
     return {
@@ -96,6 +98,7 @@ def load_config(path: str | None) -> dict:
         loaded = json.loads(Path(path).read_text(encoding="utf-8"))
         _merge(config, loaded)
     _validate_axes(config["axes"])
+    _validate_bones(config["trackers"])
     return config
 
 
@@ -127,11 +130,27 @@ def _merge(base: dict, incoming: dict) -> None:
 
 
 def _validate_axes(axes: list[str]) -> None:
-    if len(axes) != 3:
+    if not isinstance(axes, list) or len(axes) != 3:
         raise ValueError("axes must contain 3 components")
     for axis in axes:
-        if axis[-1] not in "xyz" or axis.lstrip("-") not in "xyz":
+        if axis not in _AXES:
             raise ValueError(f"invalid axis {axis!r}. Use x, y, z, -x, -y, or -z")
+    if len({axis[-1] for axis in axes}) != 3:
+        raise ValueError(f"axes {axes} repeat a component. Use each of x, y, z once")
+
+
+def _validate_bones(trackers: dict) -> None:
+    if "hip" not in trackers:
+        raise ValueError("trackers must define hip")
+    for label, spec in trackers.items():
+        bone = spec.get("bone")
+        if bone not in NAME_TO_ID:
+            raise ValueError(
+                f"tracker {label!r} uses unknown bone {bone!r}. Valid names: {', '.join(NAME_TO_ID)}"
+            )
+
+
+_AXES = ("x", "y", "z", "-x", "-y", "-z")
 
 
 def example_text() -> str:

@@ -1,9 +1,11 @@
+import json
+import math
 import socket
 import tempfile
 import unittest
 from pathlib import Path
 
-from mocopi_bridge.app import INSTRUCTIONS, Session
+from mocopi_bridge.app import INSTRUCTIONS, BridgeService, Session
 from mocopi_bridge.bvh_writer import BvhRecorder
 from mocopi_bridge.config import load_config
 from mocopi_bridge.forward import UdpForwarder
@@ -16,7 +18,7 @@ from mocopi_bridge.parser import (
     parse_packet,
     tag,
 )
-from mocopi_bridge.skeleton import forward_kinematics, local_transforms
+from mocopi_bridge.skeleton import _mul, euler_unity_deg, forward_kinematics, heading
 
 IDENTITY = (0.0, 0.0, 0.0, 1.0)
 ROOT = Path(__file__).resolve().parents[1]
@@ -229,6 +231,127 @@ class SessionTests(unittest.TestCase):
             written = list(Path(directory).glob("*.bvh"))
             self.assertEqual(len(written), 1)
             self.assertIn("JOINT l_foot", written[0].read_text(encoding="utf-8"))
+
+
+def _axis_quat(axis: str, degrees: float) -> tuple[float, float, float, float]:
+    half = math.radians(degrees) / 2.0
+    s, c = math.sin(half), math.cos(half)
+    return {"x": (s, 0.0, 0.0, c), "y": (0.0, s, 0.0, c), "z": (0.0, 0.0, s, c)}[axis]
+
+
+def _compose(*steps: tuple[str, float]) -> tuple[float, float, float, float]:
+    """Matrix product of the steps, left to right."""
+    result = IDENTITY
+    for axis, degrees in steps:
+        result = _mul(result, _axis_quat(axis, degrees))
+    return result
+
+
+def _same_rotation(test: unittest.TestCase, left, right) -> None:
+    dot = abs(sum(a * b for a, b in zip(left, right)))
+    test.assertAlmostEqual(dot, 1.0, places=6)
+
+
+class RotationTests(unittest.TestCase):
+    def test_osc_euler_matches_unity_quaternion_euler(self):
+        for x, y, z in ((30.0, 45.0, 60.0), (-70.0, 170.0, -20.0), (10.0, -95.0, 120.0)):
+            unity = _compose(("y", y), ("x", x), ("z", z))
+            ex, ey, ez = euler_unity_deg(unity)
+            _same_rotation(self, _compose(("y", ey), ("x", ex), ("z", ez)), unity)
+            self.assertAlmostEqual(ex, x, places=4)
+
+    def test_osc_euler_survives_gimbal_lock(self):
+        unity = _compose(("y", 40.0), ("x", 90.0), ("z", 0.0))
+        ex, ey, ez = euler_unity_deg(unity)
+        _same_rotation(self, _compose(("y", ey), ("x", ex), ("z", ez)), unity)
+
+    def test_bvh_channels_rebuild_the_bone_rotation(self):
+        rot = _compose(("z", 50.0), ("y", 20.0), ("x", 30.0))
+        bones = [BoneDef(0, None, Transform(rot, (0.0, 1.0, 0.0)))]
+        definition = parse_packet(encode_skeleton(bones)).skeleton
+        assert definition is not None
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = BvhRecorder(directory)
+            recorder.start(definition)
+            recorder.add({0: bones[0].rest})
+            text = recorder.render()
+            recorder.stop()
+        rotation_channels = next(line.split()[5:] for line in text.splitlines() if "CHANNELS" in line)
+        values = [float(v) for v in text.strip().splitlines()[-1].split()[3:]]
+        steps = [(name[0].lower(), value) for name, value in zip(rotation_channels, values)]
+        _same_rotation(self, _compose(*steps), rot)
+
+    def test_heading_ignores_roll_and_pitch(self):
+        for tilt_axis in ("x", "z"):
+            rot = _compose(("y", 35.0), (tilt_axis, 25.0))
+            self.assertAlmostEqual(math.degrees(heading(rot)), 35.0, places=5)
+
+
+class ConfigTests(unittest.TestCase):
+    def _write(self, directory: str, payload: dict) -> str:
+        path = Path(directory) / "config.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return str(path)
+
+    def test_bad_axes_and_bones_fail_at_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for axes in (["x", "x", "z"], ["xy", "y", "z"], ["--x", "y", "z"], ["", "y", "z"]):
+                with self.assertRaises(ValueError):
+                    load_config(self._write(directory, {"axes": axes}))
+            with self.assertRaises(ValueError):
+                load_config(self._write(directory, {"trackers": {"hip": {"bone": "pelvis"}}}))
+            self.assertEqual(load_config(self._write(directory, {"axes": ["-x", "z", "y"]}))["axes"], ["-x", "z", "y"])
+
+
+class BvhRecorderTests(unittest.TestCase):
+    def test_frames_stream_to_disk_and_part_file_is_removed(self):
+        definition = parse_packet(encode_skeleton(tpose())).skeleton
+        assert definition is not None
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = BvhRecorder(directory)
+            first = recorder.start(definition)
+            for index in range(3):
+                recorder.add(_locals(tpose()), now=index * 0.02)
+            path = recorder.stop()
+            second = recorder.start(definition)
+            recorder.stop()
+            self.assertEqual(path, first)
+            self.assertNotEqual(first, second)
+            self.assertEqual(list(Path(directory).glob("*.part")), [])
+            text = first.read_text(encoding="utf-8")
+            self.assertIn("Frames: 3", text)
+            self.assertIn("Frame Time: 0.020000", text)
+
+    def test_bone_with_missing_parent_is_still_recorded(self):
+        bones = [_bone(0, None, (0.0, 1.0, 0.0)), _bone(5, 4, (0.0, 0.1, 0.0))]
+        definition = parse_packet(encode_skeleton(bones)).skeleton
+        assert definition is not None
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = BvhRecorder(directory)
+            recorder.start(definition)
+            recorder.add(_locals(bones))
+            text = recorder.render()
+            recorder.stop()
+        self.assertIn("torso_5", text)
+        self.assertEqual(len(text.strip().splitlines()[-1].split()), 12)
+
+
+class ServiceNoteTests(unittest.TestCase):
+    def test_repeated_notes_are_queued_once(self):
+        config = load_config(str(ROOT / "config.example.json"))
+        service = BridgeService(config)
+        try:
+            with service.lock:
+                for _ in range(50):
+                    service._note("Ignored packet: packet is too short")
+                service._note(None)
+                service._note("UDP is back.")
+            self.assertEqual(
+                service.drain_notes(),
+                ["Ignored packet: packet is too short", "UDP is back."],
+            )
+        finally:
+            service.stop()
 
 
 class ForwardTests(unittest.TestCase):

@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 
 from mocopi_bridge.sensors import BODY_ROLES, SensorSample
-from mocopi_bridge.skeleton import WorldBone
+from mocopi_bridge.skeleton import WorldBone, heading
 
 _HIP_ID = 0
 _HEAD_ID = 10
@@ -24,7 +24,7 @@ _FOOT_Y = 0.05
 def stance_world(samples: dict[str, SensorSample], height_m: float) -> dict[int, WorldBone]:
     height = max(float(height_m), 0.5)
     hip = samples.get("hip")
-    yaw = _yaw(hip.rotation) if hip is not None else 0.0
+    yaw = heading(hip.rotation) if hip is not None else 0.0
     world: dict[int, WorldBone] = {}
     if hip is not None:
         world[_HIP_ID] = WorldBone(_HIP_ID, _turn(yaw, (0.0, height * 0.53, 0.0)), hip.rotation)
@@ -51,8 +51,3 @@ def _turn(yaw: float, pos: tuple[float, float, float]) -> tuple[float, float, fl
     sine = math.sin(yaw)
     x, y, z = pos
     return (cosine * x + sine * z, y, -sine * x + cosine * z)
-
-
-def _yaw(rotation: tuple[float, float, float, float]) -> float:
-    x, y, z, w = rotation
-    return math.atan2(2.0 * (w * y + x * z), 1.0 - 2.0 * (y * y + z * z))

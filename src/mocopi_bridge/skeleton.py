@@ -89,10 +89,28 @@ def present_world(
 
 
 def capture_reset(hip: WorldBone) -> tuple[float, float, float]:
-    return (hip.pos[0], hip.pos[2], _yaw(hip.rot))
+    return (hip.pos[0], hip.pos[2], heading(hip.rot))
+
+
+def euler_unity_deg(rot: tuple[float, float, float, float]) -> tuple[float, float, float]:
+    """(x, y, z) degrees for Unity's Quaternion.Euler: z first, then x, then y.
+
+    VRChat reads OSC tracker rotation in this convention.
+    """
+    x, y, z, w = _normalize(rot)
+    sin_x = max(-1.0, min(1.0, 2.0 * (w * x - y * z)))
+    pitch = math.asin(sin_x)
+    if abs(sin_x) < 0.9999999:
+        yaw = math.atan2(2.0 * (x * z + w * y), 1.0 - 2.0 * (x * x + y * y))
+        roll = math.atan2(2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z))
+    else:
+        yaw = math.atan2(-2.0 * (x * z - w * y), 1.0 - 2.0 * (y * y + z * z))
+        roll = 0.0
+    return (math.degrees(pitch), math.degrees(yaw), math.degrees(roll))
 
 
 def euler_xyz_deg(rot: tuple[float, float, float, float]) -> tuple[float, float, float]:
+    """(x, y, z) degrees for the rotation Rz(z) * Ry(y) * Rx(x)."""
     x, y, z, w = _normalize(rot)
     sin_roll = 2.0 * (w * x + y * z)
     cos_roll = 1.0 - 2.0 * (x * x + y * y)
@@ -116,9 +134,10 @@ def bone_id(name: str) -> int:
         raise KeyError(f"unknown bone {name!r}. Valid names: {known}") from exc
 
 
-def _yaw(rot: tuple[float, float, float, float]) -> float:
+def heading(rot: tuple[float, float, float, float]) -> float:
+    """Turn about +Y in radians, taken from where the local +Z axis points."""
     x, y, z, w = _normalize(rot)
-    return math.atan2(2.0 * (w * y + x * z), 1.0 - 2.0 * (y * y + z * z))
+    return math.atan2(2.0 * (x * z + w * y), 1.0 - 2.0 * (x * x + y * y))
 
 
 def _quat_yaw(yaw: float) -> tuple[float, float, float, float]:

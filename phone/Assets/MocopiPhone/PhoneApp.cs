@@ -25,6 +25,9 @@ public sealed class PhoneApp : MonoBehaviour
     string status = "Assign a role to each sensor, then send.";
     float nextSend;
     UdpClient client;
+    IPEndPoint target;
+    string targetAddress;
+    int targetPort;
 
     void Awake()
     {
@@ -127,15 +130,32 @@ public sealed class PhoneApp : MonoBehaviour
 
     void Send(string json, int port)
     {
+        IPEndPoint endpoint = Target(port);
+        if (endpoint == null)
+        {
+            status = "Type this PC's address, for example 192.168.1.20.";
+            return;
+        }
         try
         {
             byte[] bytes = Encoding.UTF8.GetBytes(json);
-            client.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Parse(pcAddress), port));
+            client.Send(bytes, bytes.Length, endpoint);
         }
         catch (Exception error)
         {
             status = error.Message;
         }
+    }
+
+    IPEndPoint Target(int port)
+    {
+        if (pcAddress != targetAddress || port != targetPort)
+        {
+            targetAddress = pcAddress;
+            targetPort = port;
+            target = IPAddress.TryParse(pcAddress.Trim(), out IPAddress address) ? new IPEndPoint(address, port) : null;
+        }
+        return target;
     }
 
     static string SampleJson(LiveSensor sensor, string role, string name)

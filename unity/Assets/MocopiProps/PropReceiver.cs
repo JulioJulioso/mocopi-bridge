@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -16,13 +17,23 @@ public sealed class PropReceiver : MonoBehaviour
     Thread thread;
     volatile bool running;
     readonly object gate = new object();
-    string pendingName;
-    Quaternion pendingRotation = Quaternion.identity;
-    bool hasPacket;
+    // Latest rotation per object. Several props share one socket, so one slot would drop all but the last.
+    readonly Dictionary<string, Quaternion> pending = new Dictionary<string, Quaternion>();
+    readonly List<KeyValuePair<string, Quaternion>> drained = new List<KeyValuePair<string, Quaternion>>();
+    readonly Dictionary<string, Transform> targets = new Dictionary<string, Transform>();
 
     void Start()
     {
-        client = new UdpClient(port);
+        try
+        {
+            client = new UdpClient(port);
+        }
+        catch (SocketException error)
+        {
+            Debug.LogError("PropReceiver cannot listen on UDP " + port + ": " + error.Message);
+            enabled = false;
+            return;
+        }
         running = true;
         thread = new Thread(Listen) { IsBackground = true };
         thread.Start();
@@ -36,20 +47,20 @@ public sealed class PropReceiver : MonoBehaviour
 
     void Update()
     {
-        string name;
-        Quaternion rotation;
         lock (gate)
         {
-            if (!hasPacket)
+            if (pending.Count == 0)
                 return;
-            name = pendingName;
-            rotation = pendingRotation;
-            hasPacket = false;
+            drained.Clear();
+            drained.AddRange(pending);
+            pending.Clear();
         }
-        Transform target = FindNamed(name);
-        if (target == null)
-            return;
-        target.rotation = rotation;
+        for (int i = 0; i < drained.Count; i++)
+        {
+            Transform target = FindNamed(drained[i].Key);
+            if (target != null)
+                target.rotation = drained[i].Value;
+        }
     }
 
     void Listen()
@@ -63,11 +74,7 @@ public sealed class PropReceiver : MonoBehaviour
                 if (!TryRead(Encoding.UTF8.GetString(data), out string name, out Quaternion rotation))
                     continue;
                 lock (gate)
-                {
-                    pendingName = name;
-                    pendingRotation = rotation;
-                    hasPacket = true;
-                }
+                    pending[name] = rotation;
             }
             catch (SocketException)
             {
@@ -92,13 +99,15 @@ public sealed class PropReceiver : MonoBehaviour
         string[] parts = numbers.Split(',');
         if (name.Length == 0 || parts.Length != 4)
             return false;
-        if (!float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x))
+        var style = System.Globalization.NumberStyles.Float;
+        var culture = System.Globalization.CultureInfo.InvariantCulture;
+        if (!float.TryParse(parts[0], style, culture, out float x))
             return false;
-        if (!float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y))
+        if (!float.TryParse(parts[1], style, culture, out float y))
             return false;
-        if (!float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
+        if (!float.TryParse(parts[2], style, culture, out float z))
             return false;
-        if (!float.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float w))
+        if (!float.TryParse(parts[3], style, culture, out float w))
             return false;
         rotation = new Quaternion(x, y, z, w);
         return true;
@@ -116,14 +125,17 @@ public sealed class PropReceiver : MonoBehaviour
         return json.Substring(from, to - from);
     }
 
-    static Transform FindNamed(string objectName)
+    Transform FindNamed(string objectName)
     {
-        GameObject[] objects = FindObjectsOfType<GameObject>();
-        for (int i = 0; i < objects.Length; i++)
-        {
-            if (objects[i].name == objectName)
-                return objects[i].transform;
-        }
-        return null;
+        // A destroyed Transform compares equal to null, so a stale entry is looked up again.
+        if (targets.TryGetValue(objectName, out Transform cached) && cached != null)
+            return cached;
+        GameObject found = GameObject.Find(objectName);
+        Transform target = found != null ? found.transform : null;
+        if (target != null)
+            targets[objectName] = target;
+        else
+            targets.Remove(objectName);
+        return target;
     }
 }
