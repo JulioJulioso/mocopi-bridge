@@ -110,7 +110,7 @@ Closing the console disconnects the sensors. Start the command again next time. 
 
 **The scan shows no mocopi sensors.** Turn each sensor off and on. Confirm the phone's Bluetooth is off. In Device Manager, confirm the only enabled Bluetooth adapter is the UB500. Unplug the UB500, plug it into another rear USB 2.0 port, and scan again.
 
-**The scan sees them, then Connecting fails or retries forever.** Another program still owns the sensor. Close Sony's app. Turn the sensor off and on, then let the program retry. It waits 3 seconds and tries again on its own. Turning the UB500 off and on in Windows Bluetooth settings clears a stuck radio.
+**The console says `Could not start notify` or `Unreachable`, or Device Manager fills with Bluetooth LE Generic Attribute Service.** Quit the program. Those extra rows are leftovers from failed connections, not extra adapters. Uninstall only the Generic Attribute Service entries, and leave the TP-Link adapter. Turn every sensor off. Turn the UB500 off and on in Windows Bluetooth settings. Turn the sensors on again and run the link once. It now connects one sensor at a time and writes the same messages to `slime_link.log`.
 
 **One sensor streams and the others never do.** A full set should connect together. If one address never succeeds, factory-reset only that sensor (see the last question) and scan again.
 

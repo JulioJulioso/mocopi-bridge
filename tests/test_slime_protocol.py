@@ -1,6 +1,7 @@
 import struct
 import unittest
 
+from mocopi_bridge.slime_link import GattChar, choose_channels
 from mocopi_bridge.slime_protocol import (
     START_STREAM,
     build_handshake,
@@ -35,6 +36,16 @@ class SlimeProtocolTests(unittest.TestCase):
 
     def test_short_notification_is_ignored(self):
         self.assertIsNone(parse_imu(b"\x00\x01"))
+
+    def test_notify_skips_the_declaration_handle(self):
+        chars = [
+            GattChar("00002803-0000-1000-8000-00805f9b34fb", 0x21, frozenset({"notify"})),
+            GattChar("0000ff01-0000-1000-8000-00805f9b34fb", 0x20, frozenset({"write"})),
+            GattChar("0000ff00-0000-1000-8000-00805f9b34fb", 0x22, frozenset({"notify"})),
+        ]
+        command, notify = choose_channels(chars)
+        self.assertEqual(command, "0000ff01-0000-1000-8000-00805f9b34fb")
+        self.assertEqual(notify, ["0000ff00-0000-1000-8000-00805f9b34fb"])
 
 
 if __name__ == "__main__":

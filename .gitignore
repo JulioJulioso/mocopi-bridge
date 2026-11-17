@@ -5,6 +5,7 @@ recordings/
 *.bvh
 config.json
 slime_link.json
+slime_link.log
 bridge.log
 **/Library/
 **/Temp/

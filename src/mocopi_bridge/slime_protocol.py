@@ -10,8 +10,11 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
-# Custom service. The first characteristic notifies; the second takes commands.
-SERVICE_UUID = "0000ff00-0000-1000-8000-00805f9b34fb"
+# IMU notifications and the command characteristic. ff00 is not a service.
+DATA_UUIDS = (
+    "0000ff00-0000-1000-8000-00805f9b34fb",
+    "0000ff03-0000-1000-8000-00805f9b34fb",
+)
 COMMAND_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"
 
 # Public start and status commands used by the trackers.

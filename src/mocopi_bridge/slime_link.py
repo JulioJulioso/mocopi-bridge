@@ -4,6 +4,9 @@ Windows cannot run the original MoSlime script:
 https://github.com/moslime/moslime
 This uses Bleak, so the TP-Link UB500 works when it is the only active
 Bluetooth adapter.
+
+Connections are opened one at a time. Opening all six at once overflows the
+adapter and Windows then lists a pile of dead GATT services.
 """
 
 from __future__ import annotations
@@ -11,14 +14,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import socket
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from mocopi_bridge.slime_protocol import (
     COMMAND_UUID,
+    DATA_UUIDS,
     REQUEST_STATUS,
-    SERVICE_UUID,
     START_STREAM,
     ImuSample,
     battery_from_status,
@@ -76,6 +81,7 @@ class TrackerSession:
         self.slime = slime
         self.packet_id = 0
         self.last_sample = 0.0
+        self.packets = 0
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def close(self) -> None:
@@ -107,6 +113,13 @@ class TrackerSession:
         self._socket.sendto(payload, self.slime)
 
 
+@dataclass(frozen=True)
+class GattChar:
+    uuid: str
+    handle: int
+    properties: frozenset[str]
+
+
 def looks_like_mocopi(name: str | None) -> bool:
     if not name:
         return False
@@ -114,84 +127,177 @@ def looks_like_mocopi(name: str | None) -> bool:
     return any(hint in folded for hint in NAME_HINTS)
 
 
+def choose_channels(chars: list[GattChar]) -> tuple[str, list[str]]:
+    """Pick the command characteristic and notification candidates, best first.
+
+    Handle 0x0021 on these sensors is a GATT declaration, not the IMU stream.
+    Subscribing to it makes Windows return Unreachable and drop the link.
+    """
+    command = COMMAND_UUID
+    writers = [char for char in chars if "write" in char.properties or "write-without-response" in char.properties]
+    preferred = [char for char in writers if char.uuid.lower() == COMMAND_UUID]
+    if preferred:
+        command = preferred[0].uuid
+    elif writers:
+        command = writers[0].uuid
+
+    notify = [
+        char
+        for char in chars
+        if "notify" in char.properties or "indicate" in char.properties
+        if not _reserved_uuid(char.uuid)
+    ]
+    notify.sort(key=lambda char: (0 if char.uuid.lower() in DATA_UUIDS else 1, char.handle))
+    if not notify:
+        raise RuntimeError("this tracker has no IMU notification")
+    return command, [char.uuid for char in notify]
+
+
+def describe_channels(chars: list[GattChar]) -> str:
+    lines = []
+    for char in chars:
+        props = ",".join(sorted(char.properties)) or "-"
+        lines.append(f"handle {char.handle:#06x} {char.uuid} [{props}]")
+    return "\n".join(lines)
+
+
+def _reserved_uuid(uuid: str) -> bool:
+    short = uuid.lower().replace("-", "")
+    return short[4:8] in {"2800", "2801", "2803", "2901", "2902"} if short.startswith("0000") else False
+
+
+def _backoff(attempt: int) -> int:
+    return min(30, 5 * (2 ** max(attempt - 1, 0)))
+
+
+def _logger() -> logging.Logger:
+    log = logging.getLogger("slime_link")
+    if log.handlers:
+        return log
+    log.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S")
+    file_handler = logging.FileHandler("slime_link.log", encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    stream = logging.StreamHandler()
+    stream.setFormatter(formatter)
+    log.addHandler(file_handler)
+    log.addHandler(stream)
+    return log
+
+
 async def scan_addresses() -> list[tuple[str, str]]:
     from bleak import BleakScanner
 
+    log = _logger()
     found = await BleakScanner.discover(timeout=8.0)
     chosen: list[tuple[str, str]] = []
-    print("Nearby Bluetooth devices:")
+    log.info("Nearby Bluetooth devices:")
     for device in found:
         label = device.name or "(no name)"
         mark = "  <-- mocopi" if looks_like_mocopi(device.name) else ""
-        print(f"  {device.address}  {label}{mark}")
+        log.info("  %s  %s%s", device.address, label, mark)
         if looks_like_mocopi(device.name):
             chosen.append((device.address, device.name or device.address))
     return chosen
 
 
-async def hold_tracker(address: str, name: str, slime: tuple[str, int], stop: asyncio.Event) -> None:
+async def hold_tracker(
+    address: str,
+    name: str,
+    slime: tuple[str, int],
+    stop: asyncio.Event,
+    connect_lock: asyncio.Lock,
+) -> None:
     from bleak import BleakClient
 
+    log = _logger()
     session = TrackerSession(address, slime)
+    attempt = 0
     try:
         while not stop.is_set():
+            client = None
             try:
-                print(f"Connecting {name} ({address})")
-                async with BleakClient(address, timeout=20.0) as client:
-                    await _start_stream(client, session)
-                    print(f"Streaming {name}")
-                    while client.is_connected and not stop.is_set():
-                        await asyncio.sleep(0.5)
-                        if session.last_sample and time.monotonic() - session.last_sample > 2.0:
-                            print(f"{name} went quiet. Reconnecting.")
-                            break
+                async with connect_lock:
+                    if stop.is_set():
+                        return
+                    log.info("Connecting %s (%s), attempt %s", name, address, attempt + 1)
+                    client = BleakClient(address, timeout=20.0)
+                    await client.connect()
+                    await _start_stream(client, session, name)
+                    log.info("Streaming %s. Waiting 2s before the next sensor.", name)
+                    await asyncio.sleep(2)
+                attempt = 0
+                while client.is_connected and not stop.is_set():
+                    await asyncio.sleep(0.5)
+                    silent_for = time.monotonic() - session.last_sample
+                    if session.packets == 0 and silent_for > 8:
+                        log.warning("%s sent no IMU data for 8s. Reconnecting.", name)
+                        break
+                    if session.packets and silent_for > 5:
+                        log.warning("%s went quiet. Reconnecting.", name)
+                        break
             except Exception as exc:
-                print(f"{name} disconnected: {exc}")
+                attempt += 1
+                wait = _backoff(attempt)
+                log.warning("%s disconnected: %s", name, exc)
+                log.info("Retrying %s in %s seconds.", name, wait)
+                await asyncio.sleep(wait)
+            finally:
+                if client is not None and client.is_connected:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
             if stop.is_set():
                 break
-            print(f"Retrying {name} in 3 seconds.")
-            await asyncio.sleep(3)
     finally:
         session.close()
 
 
-async def _start_stream(client, session: TrackerSession) -> None:
-    notify_uuid, command_uuid = _characteristics(client)
+async def _start_stream(client, session: TrackerSession, name: str) -> None:
+    log = _logger()
+    chars = [
+        GattChar(char.uuid, int(getattr(char, "handle", 0)), frozenset(item.lower() for item in char.properties))
+        for service in client.services
+        for char in service.characteristics
+    ]
+    log.info("%s GATT table:\n%s", name, describe_channels(chars))
+    command_uuid, notify_uuids = choose_channels(chars)
+    log.info("%s command %s; notify order %s", name, command_uuid, ", ".join(notify_uuids))
     session.send_hello("0")
     session.last_sample = time.monotonic()
+    session.packets = 0
 
     def on_notify(_sender, data: bytearray) -> None:
         payload = bytes(data)
         sample = parse_imu(payload)
         if sample is not None and len(payload) >= 30:
+            session.packets += 1
+            if session.packets == 1:
+                log.info("%s first IMU packet, %s bytes", name, len(payload))
             session.send_sample(sample)
             return
         session.send_battery(payload)
 
-    await client.start_notify(notify_uuid, on_notify)
+    last_error = "no notification characteristic accepted"
+    for notify_uuid in notify_uuids:
+        try:
+            await client.start_notify(notify_uuid, on_notify)
+            log.info("%s notifications started on %s", name, notify_uuid)
+            last_error = ""
+            break
+        except Exception as exc:
+            last_error = str(exc)
+            log.warning("%s could not notify on %s: %s", name, notify_uuid, exc)
+    if last_error:
+        raise RuntimeError(last_error)
     await client.write_gatt_char(command_uuid, START_STREAM, response=True)
+    log.info("%s stream command sent", name)
     await asyncio.sleep(1.0)
     try:
         await client.write_gatt_char(command_uuid, REQUEST_STATUS, response=False)
-    except Exception:
-        pass
-
-
-def _characteristics(client) -> tuple[str, str]:
-    notify_uuid = None
-    command_uuid = COMMAND_UUID
-    for service in client.services:
-        if service.uuid.lower() != SERVICE_UUID:
-            continue
-        for char in service.characteristics:
-            props = {item.lower() for item in char.properties}
-            if "notify" in props or "indicate" in props:
-                notify_uuid = char.uuid
-            if "write" in props or "write-without-response" in props:
-                command_uuid = char.uuid
-    if notify_uuid is None:
-        raise RuntimeError("this tracker has no IMU notification")
-    return notify_uuid, command_uuid
+    except Exception as exc:
+        log.info("%s status request skipped: %s", name, exc)
 
 
 async def run_link(config: dict, scan_only: bool) -> None:
@@ -214,8 +320,11 @@ async def run_link(config: dict, scan_only: bool) -> None:
         print("No mocopi sensors found. Turn them on, then run again.")
         return
     stop = asyncio.Event()
+    connect_lock = asyncio.Lock()
+    log = _logger()
+    log.info("Connecting %s sensor(s), one at a time.", len(named))
     tasks = [
-        asyncio.create_task(hold_tracker(address, name, slime, stop))
+        asyncio.create_task(hold_tracker(address, name, slime, stop, connect_lock))
         for address, name in named
     ]
     try:
