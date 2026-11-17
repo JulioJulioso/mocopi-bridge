@@ -88,7 +88,9 @@ The scan prints every nearby device for about eight seconds. A mocopi sensor is 
 python -m mocopi_bridge.slime_link
 ```
 
-The console prints `Connecting`, then `Streaming`, once per sensor. Leave the sensors still on a table until all six say `Streaming`. Starting the stream zeroes each sensor's axes. Moving them during that second makes the first pose crooked.
+The console prints `Connecting`, then `Streaming`, once per sensor. `Streaming` appears only after motion data arrives, and SlimeVR lists a sensor only from that moment. Leave the sensors still on a table until all six say `Streaming`. Starting the stream zeroes each sensor's axes. Moving them during that second makes the first pose crooked.
+
+A sensor that fails 8 connections in a row is dropped with `Gave up on ...`, and the others keep going. Run the command again to keep trying, or change the limit with `--attempts 20` (`--attempts 0` never gives up).
 
 6. SlimeVR lists the trackers and a battery level. Shake one sensor. Its row is the one that moves, which is how you tell the physical sensor from the others.
 7. Assign body parts in SlimeVR. The colored cap does not choose the part. With a Quest, leave the head and hands to the headset and controllers. A practical set is chest, hips, both thighs, and both ankles.
@@ -114,9 +116,9 @@ Closing the console disconnects the sensors. Start the command again next time. 
 
 **One sensor streams and the others never do.** A full set should connect together. If one address never succeeds, factory-reset only that sensor (see the last question) and scan again.
 
-**SlimeVR never lists the trackers.** The console can say `Streaming` while SlimeVR was started second. Quit this program, open SlimeVR, then run the program again. Trackers appear when the handshake reaches SlimeVR on port 6969.
+**SlimeVR never lists the trackers.** The program repeats the handshake every second until SlimeVR answers, then prints `accepted by SlimeVR` once per sensor. Opening SlimeVR after this program is fine. If that line never appears, SlimeVR is not listening at the address printed on the first line (`SlimeVR at ...`). Open SlimeVR, allow it through the Windows firewall, and if it runs on another PC set `autodiscovery` to `false` and put that PC's address in `slime_ip`.
 
-**SlimeVR shows a tracker as disconnected or timed out.** This program already drops a sensor that sends nothing for two seconds and connects it again. The console prints `went quiet. Reconnecting.` If the row stays dead, turn that one sensor off and on. Do not delete it in SlimeVR. When the stream returns, the same tracker comes back. If you removed it in SlimeVR, restart this program so the handshake is sent again, then assign the body part once more.
+**SlimeVR shows a tracker as disconnected or timed out.** This program already drops a sensor that sends nothing for five seconds and connects it again. The console prints `went quiet. Reconnecting.` If the row stays dead, turn that one sensor off and on. Do not delete it in SlimeVR. When the stream returns, the same tracker comes back. If you removed it in SlimeVR, restart this program so the handshake is sent again, then assign the body part once more.
 
 **The body is crooked, twisted, or facing the wrong way, but every tracker is still connected.** This is not a Bluetooth failure. Do these in order:
 
@@ -152,11 +154,12 @@ SlimeVR is the live output. This Bluetooth program only feeds it.
   "addresses": [],
   "slime_ip": "127.0.0.1",
   "slime_port": 6969,
-  "autodiscovery": true
+  "autodiscovery": true,
+  "max_attempts": 8
 }
 ```
 
-Leave `addresses` empty to connect every nearby mocopi sensor. If a neighbor's device is picked up, paste only your six addresses into that list. With `autodiscovery` on, the program looks for SlimeVR and otherwise uses `127.0.0.1:6969`.
+Leave `addresses` empty to connect every nearby mocopi sensor. If a neighbor's device is picked up, paste only your six addresses into that list. With `autodiscovery` on, the program looks for SlimeVR and otherwise uses `127.0.0.1:6969`. `max_attempts` is how many failed connections in a row a sensor gets before the program stops trying it. `0` means it keeps trying.
 
 ## Other paths
 

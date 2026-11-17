@@ -10,18 +10,21 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
-# IMU notifications and the command characteristic. ff00 is not a service.
-DATA_UUIDS = (
-    "0000ff00-0000-1000-8000-00805f9b34fb",
-    "0000ff03-0000-1000-8000-00805f9b34fb",
-)
-COMMAND_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"
+# Characteristics as Bleak lists them on Windows (declaration handle in brackets).
+# MoSlime reads the same ones by value handle: IMU on 73 (0x49), replies on 34 (0x22).
+IMU_UUID = "25047e64-657c-4856-afcf-e315048a965b"  # [0x48] 36-byte motion stream
+COMMAND_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"  # [0x1f] start and status commands
+REPLY_UUID = "0000ff03-0000-1000-8000-00805f9b34fb"  # [0x21] command replies, battery
+# Notifications carry 36 bytes. Below this ATT MTU the sensor cannot send them whole.
+MIN_MTU = 39
 
 # Public start and status commands used by the trackers.
 START_STREAM = bytes.fromhex("7e0318d6010000")
 REQUEST_STATUS = bytes.fromhex("7e0209029ada")
 
 _MOUNT = (0.70710678118, 0.70710678118, 0.0, 0.0)
+_STATUS_REPLY = b"\x7e\x07\x09"
+_SERVER_HELLO = b"Hey OVR =D"
 
 
 @dataclass(frozen=True)
@@ -32,8 +35,8 @@ class ImuSample:
 
 
 def parse_imu(data: bytes) -> ImuSample | None:
-    """Read one 36-byte notification. Returns None when the packet is short."""
-    if len(data) < 30:
+    """Read one IMU notification (36 bytes, 30 used). None for short or status packets."""
+    if len(data) < 30 or is_status_reply(data):
         return None
     raw_w = _quat_component(data[8:10])
     raw_x = _quat_component(data[10:12])
@@ -54,7 +57,7 @@ def build_handshake(mac: str, firmware: str, packet_id: int) -> bytes:
     mac_bytes = bytes.fromhex(mac.replace(":", "").replace("-", ""))
     if len(mac_bytes) != 6:
         raise ValueError("a tracker address needs 6 bytes")
-    build = int(firmware.replace(".", "") or "0")
+    build = min(int("".join(ch for ch in firmware if ch.isdigit()) or "0"), 0xFFFFFFFF)
     return b"".join(
         (
             _header(3, packet_id),
@@ -70,7 +73,8 @@ def build_handshake(mac: str, firmware: str, packet_id: int) -> bytes:
 
 
 def build_sensor_info(packet_id: int) -> bytes:
-    return _header(15, packet_id) + struct.pack("BBB", 0, 0, 8)
+    """Sensor 0, status 1 (SlimeVR firmware: 0 offline, 1 ok, 2 error), IMU type 8."""
+    return _header(15, packet_id) + struct.pack("BBB", 0, 1, 8)
 
 
 def build_rotation(rotation: tuple[float, float, float, float], packet_id: int) -> bytes:
@@ -86,11 +90,20 @@ def build_battery(voltage: float, fraction: float, packet_id: int) -> bytes:
     return _header(12, packet_id) + struct.pack(">ff", voltage, fraction)
 
 
+def is_status_reply(payload: bytes) -> bool:
+    return payload[:3] == _STATUS_REPLY
+
+
+def is_server_hello(payload: bytes) -> bool:
+    """SlimeVR answers a tracker handshake with packet 3 and 'Hey OVR =D <version>'."""
+    return _SERVER_HELLO in payload
+
+
 def battery_from_status(payload: bytes) -> tuple[float, float] | None:
-    if len(payload) < 11 or payload[:3] != b"\x7e\x07\x09":
+    if len(payload) < 11 or not is_status_reply(payload):
         return None
     raw = int.from_bytes(payload[7:11], "big")
-    fraction = (raw - 67410) / 6501390
+    fraction = min(max((raw - 67410) / 6501390, 0.0), 1.0)
     return fraction + 3.2, fraction
 
 
